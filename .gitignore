@@ -1,0 +1,26 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Variables and backend config — never commit real values
+terraform.tfvars
+*.auto.tfvars
+backend.hcl
+
+# OS / editor
+.DS_Store
+.vscode/
+*.swp
+
+# Temporary test artifacts
+*.pem
+*.key

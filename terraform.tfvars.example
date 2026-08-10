@@ -1,0 +1,8 @@
+ platform_subscription_id         = ""
+production_subscription_id        = ""
+non_production_subscription_id    = ""
+alert_email_address               = ""
+shared_resource_group_name        = ""
+oidc_service_principal_object_id  = ""
+tenant_domain                     = ""
+budget_amount                     = 2
