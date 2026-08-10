@@ -49,4 +49,5 @@ provider "azurerm" {
   subscription_id = var.non_production_subscription_id
 }
 
-provider "azuread" {}# Trigger Pipeline
+provider "azuread" {} 
+# Trigger Pipeline
