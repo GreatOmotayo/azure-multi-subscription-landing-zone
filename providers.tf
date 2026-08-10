@@ -21,8 +21,6 @@ terraform {
     }
   }
 
-  backend "azurerm" {}
-
 }
 
 provider "azurerm" {
@@ -50,3 +48,4 @@ provider "azurerm" {
 }
 
 provider "azuread" {}
+# Trigger Pipeline
