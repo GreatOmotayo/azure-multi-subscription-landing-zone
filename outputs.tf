@@ -43,3 +43,4 @@ output "budget_action_group_id" {
   description = "ID of the budget action group created in this module"
   value       = azurerm_monitor_action_group.budget_alerts.id
 }
+#Trigger Pipeline
