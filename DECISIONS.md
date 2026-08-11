@@ -28,9 +28,11 @@ The inline list is **authoritative** — Terraform will forcibly evict any subsc
 
 **Why this matters:** subscriptions get reorganized outside IaC more often than teams admit. The additive approach prevents an unrelated policy-tweak `apply` from silently evicting a subscription that was added by another process.
 
-### Decision: `mg-<purpose>` naming convention
+### Decision: `mg-reale-<purpose>` naming convention
 
-Matches Microsoft CAF guidance, sorts and reads cleanly in the portal. Rejected company-prefixed naming (overkill for single-tenant use) and GUID-based naming (unreadable). **Gotcha:** Management Group `name` (the ID) must be globally unique across all of Azure, not just this tenant — a `terraform apply` conflict on this resource means the ID string collided with someone else's, anywhere.
+Matches Microsoft CAF guidance's general `mg-<purpose>` pattern, with a company/brand prefix (`reale`) added ahead of the purpose segment. Rejected GUID-based naming (unreadable).
+
+Management Group `name` (ID) values only need to be unique within the tenant (the Microsoft Learn documentation describes it as the "directory unique identifier") — unlike Storage Account or Key Vault names, which sit in a genuinely global, DNS-backed namespace across all of Azure. The `reale` prefix isn't needed to avoid a cross-tenant naming collision, since no such collision risk exists at this scope. It's used because it makes ownership unambiguous at a glance in the portal, and it's consistent with how the rest of this project's resources are named (e.g. `sttfstatecicd2164`, `multi-subscription-landing-zone`).
 
 ---
 
@@ -44,21 +46,25 @@ Built-ins are Microsoft-maintained and stay current as resource types and APIs e
 
 ### Decision: Bundle policies into a custom Initiative rather than assigning each individually
 
-Assigning 5 policies individually across 3 management groups means up to 15 separate assignment resources to track. An Initiative groups them into one assignable, parameterized unit, and compliance reporting rolls up per-initiative rather than across 15 scattered states.
+Assigning 4 policies individually across 3 management groups means up to 12 separate assignment resources to track. An Initiative groups them into one assignable, parameterized unit, and compliance reporting rolls up per-initiative rather than across 12 scattered states.
 
 **Clarification on "Custom" policy_type:** the Initiative container itself is classified `Custom` because *you* assembled it — this is independent of whether the individual policies referenced inside it are built-in. Built-in initiatives (e.g., Azure Security Benchmark) were considered and rejected for this project because they bundle 200+ policies with no individual review, which undermines the goal of being able to explain every guardrail specifically.
 
 ### Decision: Differentiated policy effects per environment, not uniform `Deny`
 
+**Note: this table reflects the original design intent. The public IP guardrail described here was later dropped from the deployed Initiative — see the superseding note below the table.**
+
 | Policy | Platform | Production | NonProd |
 |---|---|---|---|
-| Deny public IPs | Audit | Deny | Audit |
+| Deny public IPs *(later removed — see note below)* | Audit | Deny | Audit |
 | Require tags | Deny | Deny | Deny |
 | Allowed regions | Deny | Deny | Deny |
-| Allowed VM SKUs | Audit | Deny | Deny |
-| Encryption (CMK) | Deny | Deny | Audit |
+| Allowed VM SKUs | Deny | Deny | Deny |
+| Encryption (CMK) | Audit | Audit | Audit |
 
-Uniform `Deny` looks safest on paper but drives teams to route around governance entirely when it blocks legitimate exceptions (Platform needing a public Application Gateway; NonProd needing SKU/testing flexibility). Tags and region restriction are cheap to comply with and have no legitimate exception, so `Deny` is safe there; public IP and SKU restriction have real exceptions, so `Audit` there preserves visibility without blocking real work.
+Uniform `Deny` looks safest on paper but drives teams to route around governance entirely when it blocks legitimate exceptions (Platform needing a public Application Gateway; NonProd needing SKU/testing flexibility). Tags and region restriction are cheap to comply with and have no legitimate exception, so `Deny` is safe there; the public IP guardrail (before removal) and SKU restriction had real exceptions worth differentiating by environment.
+
+**Superseded:** the public IP policy was dropped from the deployed Initiative during implementation — the final `storageEncryptionEffect` parameter also ended up Audit-only across all 3 environments after a later finding (see "the built-in storage CMK encryption policy does not support `Deny`" below) that its underlying built-in policy doesn't support a `Deny` effect at all. The Allowed VM SKUs guardrail, meanwhile, ended up `Deny` uniformly across all 3 environments in the actual deployment rather than differentiated — the live enforcement table in `README.md` reflects what's actually deployed; this table is preserved as-is to document the original reasoning, not as a current-state reference.
 
 ### Decision: Assign the Initiative once per Management Group, with different parameters, rather than once at root
 
@@ -66,9 +72,7 @@ Azure Policy parameters are fixed per assignment. Since effects genuinely need t
 
 ### Decision: One custom policy — Environment tag must match deployment scope
 
-Denies resources tagged `Environment=Production` when deployed under a resource group whose name contains "nonprod," catching a real-world drift pattern (tag/scope mismatch) that no built-in policy covers directly.
-
-**Known limitation, documented rather than hidden:** the rule checks resource group *naming convention* as a proxy for management group ancestry, since Azure Policy's alias support for MG ancestry is limited. A more robust version would check true MG ancestry via policy alias if that becomes available.
+Denies resources tagged `Environment=Production` when deployed under a resource group whose name contains "non-production," catching a real-world drift pattern (tag/scope mismatch) that no built-in policy covers directly.
 
 ---
 
@@ -90,17 +94,19 @@ This closes the "self-elevation" loop — a real, common cloud security review f
 
 ### Decision: Assign custom/team roles at Management Group scope by default; Dev/Test Contributor at subscription scope as a deliberate exception
 
-MG-scope assignment means any subscription added later under that MG automatically inherits the correct access with no manual re-assignment. Dev/Test is the deliberate exception: kept at subscription scope so that if a second subscription is later added under `mg-nonprod` without vetting, Contributor access doesn't apply to it automatically.
+MG-scope assignment means any subscription added later under that MG automatically inherits the correct access with no manual re-assignment. Dev/Test is the deliberate exception: kept at subscription scope so that if a second subscription is later added under `mg-reale-nonproduction` without vetting, Contributor access doesn't apply to it automatically.
 
 ### Decision: Entra ID groups managed as Terraform resources (`azuread_group`), not created manually
 
 Consistency with the rest of the project — leaving group creation as an untracked manual prerequisite would break the "everything reproducible via `terraform apply`/`destroy`" premise the whole project is built on.
 
-**Requirement this introduces:** group creation needs Microsoft Graph API application permissions (`Group.ReadWrite.All`), which is a separate permission system from Azure RBAC — a role like Owner or Contributor on a subscription does not grant any rights over the Entra ID directory itself. This is a common point of confusion and a real gotcha documented in the CI/CD section below.
+**Requirement this introduces:** group creation needs Microsoft Graph API application permissions (`Group.ReadWrite.All`), and looking up existing users by UPN (used for RBAC test-user group membership, see `test-users.tf`) needs a separate permission (`User.Read.All`) — both are a separate permission system from Azure RBAC. A role like Owner or Contributor on a subscription does not grant any rights over the Entra ID directory itself. This is a common point of confusion and a real gotcha documented in the CI/CD section below.
 
-### Decision: All 4 test groups include the project owner as a member, via Terraform
+### Decision: One dedicated test user per RBAC role, managed via Terraform
 
-Done deliberately to allow personal verification of every access boundary post-deployment. **Explicitly not a production pattern** — a single identity holding membership across Platform, Production Support, Dev/Test, and Auditor groups simultaneously violates the separation-of-duties principle the RBAC design otherwise establishes. Included here purely for testing/demonstration purposes, and documented as such rather than presented as a real-world default.
+Each of the 4 custom RBAC personas (Platform Infrastructure Operator, Production Support Operator, Dev/Test Contributor, Auditor) is validated using its own single-purpose test account, added to exactly one corresponding Entra ID group — never the project owner's own account, and never more than one group per test identity. Accounts are created manually in the Azure Portal, with Terraform managing group membership only via `data "azuread_user"` lookups (see `test-users.tf`).
+
+This mirrors real separation-of-duties practice: each identity's actual access exactly matches what its role should grant, with nothing broader layered on top. See "Finding: RBAC delete-restriction test invalidated by the project owner's standing Owner access" below for why this replaced an earlier approach that added the project owner to all 4 groups, and why that approach couldn't actually validate anything.
 
 ---
 
@@ -122,9 +128,9 @@ A single MG-level budget signals "the landing zone is over budget" without indic
 
 Production is where real overruns matter most, justifying an early-warning tier in addition to the over-budget tier. A second tier on the smaller, lower-stakes Platform/NonProd budgets would be alert fatigue for low-value signal.
 
-### Correction: `azurerm_subscription_budget` renamed to `azurerm_consumption_budget_subscription` in provider v4
+### Decision: `azurerm_consumption_budget_subscription` as the budget resource type
 
-Caught via provider documentation check before applying, not via a failed `apply`. The `time_period` block also requires an explicit `end_date` in addition to `start_date` under the current schema — the original draft only had `start_date`.
+`azurerm_consumption_budget_subscription` is the correct Terraform resource for a subscription-scoped budget, and has been the correct name since well before provider v4 (present in examples using provider `~> 3.80`). The `time_period` block's `end_date` is Optional and defaults to 10 years after `start_date` if omitted; it's set explicitly here anyway for clarity and intentional budget duration.
 
 ### Finding: RBAC delete-restriction test invalidated by the project owner's standing Owner access
 
@@ -146,25 +152,7 @@ Attempted to strengthen `storageEncryptionEffect` from `Audit`-only to include `
 
 ---
 
-## Phase 5: Module Structure & State
-
-### Decision: Flat root module with logically separated files, not reusable Terraform modules
-
-Modules earn their complexity when the same logic needs to be instantiated multiple times with different inputs. This project deploys one landing zone, once — there is no reuse case yet, and modules would add indirection (variables in, outputs out) that makes the repo harder to read end-to-end during recruiter/reviewer review, which matters more here than reuse that isn't needed.
-
-**Explicit trigger for revisiting this decision:** if a second, near-identical landing zone is ever stood up (e.g., a second portfolio scenario), that is the point to extract `modules/management-group-hierarchy/`, `modules/policy-baseline/`, etc.
-
-### Decision: Shared Terraform state storage account across portfolio projects, but a distinct `key` per project
-
-One storage account for multiple projects' state is fine, since access is controlled by RBAC, not by how many projects share the account. The distinct `key` per project is what actually enforces independence — shared state files would mean a mistake in one project's `apply` could corrupt or modify resources belonging to another.
-
-### Decision: State storage located in the Platform subscription, not a separate dedicated "state" subscription
-
-Platform's defined purpose is shared infrastructure; state storage fits that category. A fully separate, isolated subscription for state (so that nothing with the ability to modify all infrastructure state also lives inside infrastructure that state manages) is the stricter posture some enterprises use, and was considered — but judged unnecessary complexity for this project's scale. Documented as a deliberate simplification, not an oversight.
-
----
-
-## Phase 6: CI/CD
+## Phase 5: CI/CD
 
 ### Decision: Reuse the CI/CD pipeline project's OIDC architecture rather than building a new pattern
 
@@ -241,7 +229,7 @@ In this project, the **project owner's own `az cli` session** runs the first `ap
 The actual sequence:
 
 1. State storage (resource group + storage account + container) provisioned manually in the Platform subscription, using the project owner's own `az cli` session.
-2. App registration (`multi-subscription-landing-zone`) and service principal created manually. Federated credentials (`pull_request`, `environment:production`) and Graph API permission (`Group.ReadWrite.All`, admin-consented) configured — needed for the **pipeline's future runs**, not for this first `apply`.
+2. App registration (`multi-subscription-landing-zone`) and service principal created manually. Federated credentials (`pull_request`, `environment:production`) and Graph API permissions (`Group.ReadWrite.All`, `User.Read.All`, both admin-consented) configured — needed for the **pipeline's future runs**, not for this first `apply`.
 3. Confirmed the project owner's own account already holds Owner on all 3 subscriptions, plus a directory role (Global Administrator) covering Microsoft Graph group creation — Azure RBAC roles like Owner do not, on their own, grant rights to create Entra ID groups, since that's a separate permission system.
 4. `terraform init` / `plan` / `apply` run **manually, once, by the project owner, using their own identity** — creating the Management Group hierarchy, custom Policy initiative, custom RBAC roles (including `Landing Zone Deployer` itself), Entra ID groups, role assignments (including granting `Landing Zone Deployer` to the service principal), and budgets.
 5. **No cleanup step is required** — since no broad grant was ever made to the service principal, there is nothing to revoke from it. The service principal's only standing access, from its very first moment of existence, is the least-privilege `Landing Zone Deployer` role at `mg-reale-root` and `Storage Blob Data Contributor` on the state storage account.
@@ -262,6 +250,8 @@ The `platform-monthly-budget` amount was set to $2 (rather than a realistic prod
 | Provider alias mismatch (`non_production` vs `nonprod`) causing `Provider configuration not present` on a budget resource already in state | Alias name in `.tf` files changed after a resource had already been created under the original alias name | Standardized on `non_production` across both provider declaration and all resource references |
 | `terraform plan` prompting for `oidc_service_principal_object_id` | Variable referenced in Phase 3's `landing_zone_deployer` role assignment but never declared in `variables.tf` | Added the missing `variable` block; sourced the correct value via `az ad sp show --id <appId> --query id` (object ID, not app/client ID — a common mix-up) |
 | `az role assignment list --assignee $APP_ID` returning empty despite assignments existing | `$APP_ID` environment variable was stale/unset from a previous shell session | Re-fetched the app ID explicitly in the current session before reusing it; confirmed by cross-checking `az role assignment list --scope <subscription>` directly, which showed the assignment existed under the correct principal |
-| `azurerm_subscription_budget` resource type not found | Provider pinned to `~> 4.0`; resource was renamed to `azurerm_consumption_budget_subscription` in v4 | Renamed resource type across all 3 budget blocks; added missing `end_date` to `time_period` |
-| Missing `resource_provider_registrations` behavior change | Provider v4 disabled automatic resource provider registration by default (previously automatic in v3) | Added `resource_provider_registrations = "core"` to all provider blocks |
+| `terraform init` hung indefinitely in GitHub Actions (multi-hour, no error) | `backend.tf`'s `backend "azurerm" {}` block was empty by design (values meant to come from `-backend-config`), but the pipeline's `init` step only passed the dynamic/secret values (`subscription_id`, `tenant_id`, `client_id`, `use_oidc`) via inline flags — the static values (`resource_group_name`, `storage_account_name`, `container_name`, `key`) were never supplied, since they live in a gitignored, pipeline-inaccessible `backend.hcl`. Terraform responded by interactively prompting for each missing value, one at a time — which hangs forever in a non-interactive CI runner rather than failing fast | Moved the static, non-secret backend values directly into the committed `backend.tf`; added `-input=false` to every Terraform command in the pipeline as a safety net so any future missing-value scenario fails immediately with a clear error instead of hanging silently |
+| Pipeline `plan` showed `azurerm_role_assignment.landing_zone_deployer` needing replacement, with `principal_id` changing despite the `.tf` code being unchanged | `var.oidc_service_principal_object_id` resolves from different sources depending on who runs `apply` — local `terraform.tfvars` for manual runs, the `OIDC_SP_OBJECT_ID` GitHub Secret for pipeline runs. The GitHub Secret held a stale/incorrect value (likely from an earlier round of app-registration troubleshooting where client ID and object ID were being distinguished), while the local `.tfvars` held the correct value already recorded in state | Confirmed the correct object ID via `az ad sp list`, corrected the GitHub Secret to match. **This also served as unplanned but genuine proof that the self-elevation guardrail works**: when the pipeline attempted the (incorrect, drift-caused) replace, `Landing Zone Deployer`'s exclusion of `Microsoft.Authorization/roleAssignments/delete` blocked it outright — the pipeline identity could not modify its own role assignment even when Terraform itself was instructing it to. The fix required a human, running locally with standing access, to correct the underlying data (the secret value) rather than the pipeline being able to push through an RBAC change of any kind, correct or not |
+| Wrong resource type used initially for budgets | `azurerm_subscription_budget` isn't a valid resource name; the correct type is `azurerm_consumption_budget_subscription` | Corrected the resource type across all 3 budget blocks; added an explicit `end_date` to `time_period` for clarity |
+| `resource_provider_registrations` set to `"core"` | Provider v4.x defaults to `legacy` (a broad, curated set of Resource Providers auto-registered on init, carried forward from v3 behavior). Setting `resource_provider_registrations = "core"` narrows this to a smaller, more minimal set rather than accepting the broader default | Added `resource_provider_registrations = "core"` to all provider blocks as a deliberate scoping choice |
 | Planned temporary `Owner` grant to the service principal (bootstrap Steps 5/8) turned out to be unnecessary | The first `apply` is run by the project owner's own `az cli` session, not the service principal — the service principal is never authenticated during that run, only referenced as a value for a role assignment Terraform creates on its behalf | Removed the planned grant-then-revoke steps entirely; confirmed the project owner's own account already held sufficient Owner + Global Administrator rights; service principal never held any role beyond its final least-privilege `Landing Zone Deployer` assignment |
