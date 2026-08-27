@@ -84,6 +84,7 @@ azure-landing-zone/
 - An app registration (`multi-subscription-landing-zone`) with federated credentials for `pull_request` and `environment:production` GitHub Actions subjects
 - Microsoft Graph `Group.ReadWrite.All` and `User.Read.All` application permissions, admin-consented, on that app registration
 - A pre-existing storage account for Terraform remote state (in the Platform subscription)
+- Storage Blob Data Contributor role on the state storage account, granted to both the bootstrapping user and the `multi-subscription-landing-zone` service principal — required because the backend authenticates via Azure AD (`use_azuread_auth`) rather than storage account keys
 - Azure CLI authenticated as a user with Owner/User Access Administrator rights, for the one-time bootstrap
 
 ---
@@ -96,6 +97,8 @@ Copy `terraform.tfvars.example` to `terraform.tfvars` (gitignored) and fill in:
 platform_subscription_id         = ""   # Platform subscription GUID
 production_subscription_id       = ""   # Production subscription GUID
 non_production_subscription_id   = ""   # NonProd subscription GUID
+client_id                        = ""   # Client (application) ID of the multi-subscription-landing-zone service principal — used for OIDC auth on azurerm and azuread providers
+tenant_id                        = ""   # Entra ID tenant GUID — used for OIDC auth on azurerm and azuread providers
 alert_email_address              = ""   # Where budget alerts are sent
 shared_resource_group_name       = ""   # e.g. rg-platform-shared
 oidc_service_principal_object_id = ""   # Object ID of the multi-subscription-landing-zone service principal — see Prerequisites
@@ -113,7 +116,7 @@ This project uses a **manual bootstrap, pipeline-governed thereafter** model —
 
 1. Provision state storage in the Platform subscription (resource group + storage account + container)
 2. Create the `multi-subscription-landing-zone` app registration and service principal; add federated credentials (`pull_request`, `environment:production`) and grant Graph API permissions (`Group.ReadWrite.All`, `User.Read.All`, both admin-consented) — needed for the pipeline's future runs
-3. Confirm the project owner's own account already holds Owner on all 3 subscriptions and a directory role (Global Administrator) covering Entra ID group creation
+3. Confirm the project owner's own account already holds Owner on all 3 subscriptions, a directory role (Global Administrator) covering Entra ID group creation, and Storage Blob Data Contributor on the state storage account
 4. Run `terraform init` / `plan` / `apply` **manually, as the project owner** — this single run creates the Management Groups, custom Policy initiative, custom RBAC roles, Entra ID groups, role assignments (including granting `Landing Zone Deployer` to the service principal), and budgets
 5. No cleanup step is needed — the service principal never holds any role beyond its final least-privilege `Landing Zone Deployer` assignment, since it was never authenticated during the bootstrap `apply` in the first place
 6. All subsequent changes flow through the GitHub Actions pipeline only: PR → automated `plan` comment → merge → manual approval → `apply`
@@ -143,6 +146,8 @@ Effects are deliberately differentiated per environment rather than uniformly `D
 | Dev/Test engineers | Contributor | NonProd subscription | Built-in (deliberate exception) |
 | Auditors | Reader | `mg-reale-root` | Built-in |
 | CI/CD pipeline identity | Landing Zone Deployer | `mg-reale-root` | Custom — explicitly excludes `Microsoft.Authorization/*` write actions |
+
+> **Note:** the CI/CD pipeline identity also requires `Storage Blob Data Contributor` on the state storage account, granted separately — management-group-scoped RBAC does not cover storage data-plane access, which is a distinct permission layer.
 
 ---
 
