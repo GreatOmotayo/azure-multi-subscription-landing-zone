@@ -12,14 +12,14 @@ resource "azurerm_management_group_policy_assignment" "baseline_production" {
 
   parameters = jsonencode({
     allowedLocations = {
-      value = ["canadacentral", "canadaeast"]
+      value = ["centralus"]
     }
     requiredTagName = {
       value = "CostCenter"
     }
     allowedSKUs = {
       value = [
-        "Standard_B2s"
+        "Standard_B2s", "Standard_B2als_v2", "Standard_B2ls_v2", "Standard_D2als_v7"
       ]
     }
     storageEncryptionEffect = {
@@ -37,14 +37,14 @@ resource "azurerm_management_group_policy_assignment" "baseline_platform" {
 
   parameters = jsonencode({
     allowedLocations = {
-      value = ["canadacentral", "canadaeast"]
+      value = ["centralus"]
     }
     requiredTagName = {
       value = "CostCenter"
     }
     allowedSKUs = {
       value = [
-        "Standard_B2s"
+        "Standard_B2s", "Standard_B2als_v2", "Standard_B2ls_v2", "Standard_D2als_v7"
       ]
     }
     storageEncryptionEffect = {
@@ -62,14 +62,14 @@ resource "azurerm_management_group_policy_assignment" "baseline_non_production" 
 
   parameters = jsonencode({
     allowedLocations = {
-      value = ["canadacentral", "canadaeast"]
+      value = ["centralus"]
     }
     requiredTagName = {
       value = "CostCenter"
     }
     allowedSKUs = {
       value = [
-        "Standard_B2s"
+        "Standard_B2s", "Standard_B2als_v2", "Standard_B2ls_v2", "Standard_D2als_v7"
       ]
     }
     storageEncryptionEffect = {

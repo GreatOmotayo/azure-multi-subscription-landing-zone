@@ -26,26 +26,41 @@ terraform {
 provider "azurerm" {
   features {}
   subscription_id                 = var.platform_subscription_id
+  use_oidc                        = true
+  client_id                       = var.client_id
+  tenant_id                       = var.tenant_id
   resource_provider_registrations = "core"
 }
 
 provider "azurerm" {
   features {}
   alias           = "platform"
+  use_oidc        = true
+  client_id       = var.client_id
+  tenant_id       = var.tenant_id
   subscription_id = var.platform_subscription_id
 }
 
 provider "azurerm" {
   features {}
   alias           = "production"
+  use_oidc        = true
+  client_id       = var.client_id
+  tenant_id       = var.tenant_id
   subscription_id = var.production_subscription_id
 }
 
 provider "azurerm" {
   features {}
   alias           = "non_production"
+  use_oidc        = true
+  client_id       = var.client_id
+  tenant_id       = var.tenant_id
   subscription_id = var.non_production_subscription_id
 }
 
-provider "azuread" {}
-# Trigger Pipeline
+provider "azuread" {
+  use_oidc  = true
+  client_id = var.client_id
+  tenant_id = var.tenant_id
+}
