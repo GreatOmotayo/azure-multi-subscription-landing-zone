@@ -243,6 +243,46 @@ The `platform-monthly-budget` amount was set to $2 (rather than a realistic prod
 
 ---
 
+## Backend & Provider Authentication: nothing inherits, every surface needs it stated explicitly
+
+### Finding: OIDC configuration does not propagate across providers, aliases, or the backend — each needed fixing independently
+
+The project's `provider "azurerm" {}` default block had `use_oidc`, `client_id`, and `tenant_id` set correctly from the start. Three separate failures surfaced afterward, each assumed (incorrectly) to already be covered by that one working block:
+
+1. **Aliased providers (`platform`, `production`, `non_production`) only had `subscription_id` set.** With no `use_oidc`/`client_id`/`tenant_id` of their own, Terraform fell back to Azure CLI authentication for any resource using those aliases — which fails outright on a GitHub Actions runner with no interactive `az login` available (`could not configure AzureCli Authorizer: ... Please run 'az login'`).
+2. **The `azuread` provider had no auth configuration at all** (`provider "azuread" {}`), and hit the identical CLI-fallback failure — a separate incident from #1, since `azuread` talks to Microsoft Graph, not Azure Resource Manager, and doesn't inherit anything from the `azurerm` blocks.
+3. **The backend's default authentication method (`listKeys`) failed with `AuthorizationFailed`** on the OIDC service principal — the storage account's management-plane RBAC didn't include the specific `Microsoft.Storage/storageAccounts/listKeys/action` permission.
+
+**Resolution:**
+- Added `use_oidc = true`, `client_id`, and `tenant_id` to every `provider "azurerm"` block, aliased or not, and to `provider "azuread" {}`.
+- Switched the backend to `use_azuread_auth = true`, replacing key-based (`listKeys`) authentication with direct Azure AD identity access to the state storage account's blob data plane. This requires `Storage Blob Data Contributor` granted explicitly to every identity that runs Terraform against this backend — the pipeline's service principal and, for local runs, the project owner's own account. Confirmed by a local `AuthorizationPermissionMismatch` once the switch was made, resolved by granting that role directly.
+
+**The underlying lesson, worth generalizing rather than treating as three unrelated bugs:** Terraform's `backend` block, its default `provider` block, and each aliased `provider` block are independent authentication surfaces. None of them inherit configuration from one another — not from default to alias, not from `azurerm` to `azuread`, not from provider to backend. Each one either gets its auth stated explicitly or silently falls back to whatever ambient credential happens to be available (Azure CLI locally, nothing at all in CI) — which is exactly the kind of gap that works fine on a developer's laptop and fails only once it reaches an unattended pipeline.
+
+**Also discovered during this fix:** the OIDC service principal held zero role assignments across all three subscriptions (Platform, Production, NonProd) — a gap distinct from the `use_oidc` configuration itself. Being configured to authenticate as an identity is independent of that identity actually being authorized to do anything once authenticated; both layers were missing and both needed fixing.
+
+---
+
+## Management Group Bootstrap: the RBAC-on-RBAC circular dependency
+
+### The problem
+
+`terraform apply`, run manually by the project owner (per the bootstrap sequence above), failed reading and writing policy assignments at management group scope (`mg-reale-nonproduction`, `mg-reale-root`) with `AuthorizationFailed` on `Microsoft.Authorization/policyAssignments/read` and later `roleAssignments/write` — despite the project owner holding `Owner` on all three subscriptions.
+
+**Why Owner-on-subscription didn't cover it:** Azure RBAC scope inheritance flows downward only — parent to child, never child to parent. Subscriptions sit *below* management groups in the hierarchy; holding Owner at a subscription grants nothing at the management group above it, even though that subscription is a member of that MG. The project owner had, in effect, full rights everywhere *inside* the three subscriptions and no role of any kind — not even Reader — at `mg-reale-root` or any MG in between.
+
+**The circular part:** the normal fix is straightforward — assign yourself a role directly at the MG scope. But doing that requires `Microsoft.Authorization/roleAssignments/write` *at that same scope*, which is precisely the permission that's missing. There is no Azure RBAC path that lets an identity grant itself the first role assignment at a scope where it currently holds none.
+
+**Resolution:** Microsoft Entra ID's **"Elevate access"** feature exists specifically to break this circularity. Any Global Administrator (an Entra directory role, not an Azure RBAC role) can flip a one-time toggle (`Entra ID → Properties → Access management for Azure resources`, or `POST /providers/Microsoft.Authorization/elevateAccess`) that grants their own account `User Access Administrator` at the tenant root management group — the actual top of the hierarchy, above even `mg-reale-root`. From there, a normal role assignment at `mg-reale-root` scope succeeds.
+
+**One easy-to-miss step:** elevating access changes token claims, not the current CLI session's cached token. A stale `az cli` session retried the role assignment and hit the identical error immediately after elevating, until `az logout` / `az login` refreshed the session.
+
+**Why this is worth keeping standing, or not:** "Elevate access" grants are not self-revoking. Once the `mg-reale-root`-scoped Owner assignment was in place (the actual goal), the elevated `User Access Administrator` grant at tenant root was left as a candidate for manual removal — a broader-than-needed standing grant is exactly the kind of thing this project's own guardrails (e.g., `Landing Zone Deployer`'s explicit exclusion of `Authorization/*` writes) are designed to catch elsewhere, so leaving it unaddressed here would be inconsistent with the project's own stated principles.
+
+**Why this is distinct from the "Bootstrapping the Deployer Identity" problem above, despite looking similar:** that section concerns the *service principal* needing no pre-existing access because it never authenticates during the first `apply`. This problem concerns the *human operator's own account* needing access at a scope where subscription-level Owner, however broad, simply doesn't reach — a genuinely different gap in the hierarchy, encountered by the identity that bootstrap already assumed would "just work."
+
+---
+
 ## Issues encountered during build (troubleshooting log)
 
 | Issue | Cause | Resolution |
