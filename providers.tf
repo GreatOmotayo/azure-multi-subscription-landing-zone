@@ -59,4 +59,8 @@ provider "azurerm" {
   subscription_id = var.non_production_subscription_id
 }
 
-provider "azuread" {}
+provider "azuread" {
+  use_oidc  = true
+  client_id = var.client_id
+  tenant_id = var.tenant_id
+}
