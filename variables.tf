@@ -43,3 +43,11 @@ variable "budget_amount" {
   type        = number
   description = "Your monthly budget"
 }
+
+variable "client_id" {
+  type = string
+}
+
+variable "tenant_id" {
+  type = string
+}

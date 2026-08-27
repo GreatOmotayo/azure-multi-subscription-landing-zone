@@ -26,6 +26,9 @@ terraform {
 provider "azurerm" {
   features {}
   subscription_id                 = var.platform_subscription_id
+  use_oidc                        = true
+  client_id                       = var.client_id
+  tenant_id                       = var.tenant_id
   resource_provider_registrations = "core"
 }
 
