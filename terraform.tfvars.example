@@ -1,4 +1,6 @@
- platform_subscription_id         = ""
+tenant_id                         = ""
+client_id                         = ""
+platform_subscription_id          = ""
 production_subscription_id        = ""
 non_production_subscription_id    = ""
 alert_email_address               = ""
